@@ -1,7 +1,11 @@
 """
 Bus 712 arrival notifier for Fordyce Avenue stop.
-Queries Auckland Transport Realtime API and sends a push notification
-via Ntfy when bus 712 is less than 6 minutes away.
+
+FIRST TIME SETUP:
+  Run with --find-stop to discover your stop ID:
+    AT_API_KEY=your_key python check_bus.py --find-stop
+
+  Then paste the correct stop ID into STOP_ID below and remove --find-stop.
 
 Required environment variables:
   AT_API_KEY   - Your Auckland Transport API subscription key
@@ -15,17 +19,21 @@ from datetime import datetime, timezone
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
-AT_API_KEY   = os.environ["AT_API_KEY"]
-NTFY_TOPIC   = os.environ["NTFY_TOPIC"]
+AT_API_KEY = os.environ["AT_API_KEY"]
+NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
 
 ROUTE_SHORT_NAME = "712"
-STOP_NAME_KEYWORD = "Fordyce"   # partial match against stop name from AT API
 
-AT_TRIP_UPDATES_URL = "https://api.at.govt.nz/realtime/legacy/tripupdates"
-AT_STOPS_URL        = "https://api.at.govt.nz/gtfs/v3/stops"
-NTFY_URL            = f"https://ntfy.sh/{NTFY_TOPIC}"
+# Paste your stop ID here after running --find-stop (e.g. "1234-20240101")
+# Leave empty to require --find-stop mode
+STOP_ID = "6087"
 
 ALERT_THRESHOLD_MINUTES = 6
+
+AT_BASE             = "https://api.at.govt.nz"
+AT_TRIP_UPDATES_URL = f"{AT_BASE}/realtime/legacy/tripupdates"
+AT_STOPS_URL        = f"{AT_BASE}/gtfs/v3/stops"
+NTFY_URL            = f"https://ntfy.sh/{NTFY_TOPIC}"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -33,39 +41,53 @@ def at_headers():
     return {"Ocp-Apim-Subscription-Key": AT_API_KEY}
 
 
-def get_stop_id(keyword: str) -> str | None:
-    """Look up the AT stop ID for Fordyce Avenue using the GTFS static API."""
-    resp = requests.get(
-        AT_STOPS_URL,
-        params={"filter[stop_name]": keyword},
-        headers=at_headers(),
-        timeout=10,
-    )
+def find_stop():
+    """
+    Scan the live realtime feed for all stops on route 712 and print their IDs.
+    Run once: AT_API_KEY=your_key python check_bus.py --find-stop
+    """
+    print(f"Scanning realtime feed for route {ROUTE_SHORT_NAME} stops...")
+    resp = requests.get(AT_TRIP_UPDATES_URL, headers=at_headers(), timeout=10)
     resp.raise_for_status()
-    data = resp.json()
-    stops = data.get("data", [])
-    if not stops:
-        print(f"No stops found matching '{keyword}'")
-        return None
-    # Pick the first match — print all found so you can verify
-    for s in stops:
-        attrs = s.get("attributes", {})
-        print(f"  Found stop: {attrs.get('stop_name')} (id={s['id']})")
-    chosen = stops[0]
-    return chosen["id"]
+    feed = resp.json()
+
+    seen = {}  # stop_id -> set of stop_ids seen across trips
+
+    for entity in feed.get("response", {}).get("entity", []):
+        tu = entity.get("trip_update", {})
+        route_id = tu.get("trip", {}).get("route_id", "")
+        if not route_id.startswith(ROUTE_SHORT_NAME):
+            continue
+        for stu in tu.get("stop_time_update", []):
+            sid = str(stu.get("stop_id", ""))
+            if sid and sid not in seen:
+                seen[sid] = True
+
+    if not seen:
+        print("No route 712 trips found in the live feed right now.")
+        print("Try again when buses are running (e.g. between 7-8am).")
+        return
+
+    print(f"\nFound {len(seen)} unique stops on route 712 in the live feed.")
+    print("Fetching stop names...\n")
+
+    for sid in sorted(seen):
+        try:
+            r = requests.get(f"{AT_STOPS_URL}/{sid}", headers=at_headers(), timeout=10)
+            if r.status_code == 200:
+                name = r.json().get("data", {}).get("attributes", {}).get("stop_name", "?")
+            else:
+                name = "(name unavailable)"
+        except Exception:
+            name = "(error)"
+        print(f"  {sid:30s}  {name}")
+
+    print("\nFind 'Fordyce' above, copy its Stop ID, and paste into STOP_ID in the script.")
 
 
-def get_minutes_away(stop_id: str, route_short_name: str) -> int | None:
-    """
-    Query the AT Realtime trip updates feed and return the minutes until
-    the next bus on `route_short_name` arrives at `stop_id`.
-    Returns None if no upcoming arrival is found.
-    """
-    resp = requests.get(
-        AT_TRIP_UPDATES_URL,
-        headers=at_headers(),
-        timeout=10,
-    )
+def get_minutes_away(stop_id: str) -> int | None:
+    """Return minutes until next bus 712 arrives at stop_id, or None."""
+    resp = requests.get(AT_TRIP_UPDATES_URL, headers=at_headers(), timeout=10)
     resp.raise_for_status()
     feed = resp.json()
 
@@ -73,22 +95,15 @@ def get_minutes_away(stop_id: str, route_short_name: str) -> int | None:
     soonest = None
 
     for entity in feed.get("response", {}).get("entity", []):
-        trip_update = entity.get("trip_update", {})
-        trip        = trip_update.get("trip", {})
-        route_id    = trip.get("route_id", "")
-
-        # AT route_ids often look like "71200-20240101" — match on prefix
-        if not route_id.startswith(route_short_name):
+        tu = entity.get("trip_update", {})
+        if not tu.get("trip", {}).get("route_id", "").startswith(ROUTE_SHORT_NAME):
             continue
-
-        for stu in trip_update.get("stop_time_update", []):
+        for stu in tu.get("stop_time_update", []):
             if str(stu.get("stop_id", "")) != str(stop_id):
                 continue
-
             arrival = stu.get("arrival") or stu.get("departure")
             if not arrival:
                 continue
-
             arr_time = arrival.get("time")
             if arr_time and arr_time > now_ts:
                 minutes = (arr_time - now_ts) / 60
@@ -101,7 +116,7 @@ def get_minutes_away(stop_id: str, route_short_name: str) -> int | None:
 def send_notification(minutes: int):
     """Push a notification via Ntfy."""
     message = f"Bus 712 is {minutes} minute{'s' if minutes != 1 else ''} away!"
-    resp = requests.post(
+    requests.post(
         NTFY_URL,
         data=message.encode("utf-8"),
         headers={
@@ -110,22 +125,24 @@ def send_notification(minutes: int):
             "Tags": "bus,alarm",
         },
         timeout=10,
-    )
-    resp.raise_for_status()
+    ).raise_for_status()
     print(f"Notification sent: {message}")
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    print(f"Checking bus {ROUTE_SHORT_NAME} at stop matching '{STOP_NAME_KEYWORD}'...")
+    if "--find-stop" in sys.argv:
+        find_stop()
+        return
 
-    stop_id = get_stop_id(STOP_NAME_KEYWORD)
-    if not stop_id:
-        print("Could not find stop. Check STOP_NAME_KEYWORD.")
+    if not STOP_ID:
+        print("ERROR: STOP_ID is not set in the script.")
+        print("Run with --find-stop first, find your stop, then paste its ID into STOP_ID.")
         sys.exit(1)
 
-    minutes = get_minutes_away(stop_id, ROUTE_SHORT_NAME)
+    print(f"Checking bus {ROUTE_SHORT_NAME} at stop {STOP_ID}...")
+    minutes = get_minutes_away(STOP_ID)
 
     if minutes is None:
         print("No upcoming arrival found in realtime feed.")
