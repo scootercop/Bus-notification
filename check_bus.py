@@ -99,10 +99,12 @@ def get_minutes_away(stop_id: str) -> int | None:
         if not tu.get("trip", {}).get("route_id", "").startswith(ROUTE_SHORT_NAME):
             continue
         for stu in tu.get("stop_time_update", []):
+            if not isinstance(stu, dict):
+                continue
             if str(stu.get("stop_id", "")) != str(stop_id):
                 continue
             arrival = stu.get("arrival") or stu.get("departure")
-            if not arrival:
+            if not isinstance(arrival, dict):
                 continue
             arr_time = arrival.get("time")
             if arr_time and arr_time > now_ts:
