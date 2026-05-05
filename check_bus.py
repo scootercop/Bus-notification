@@ -23,9 +23,6 @@ AT_API_KEY = os.environ["AT_API_KEY"]
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
 
 ROUTE_SHORT_NAME = "712"
-
-# Paste your stop ID here after running --find-stop (e.g. "1234-20240101")
-# Leave empty to require --find-stop mode
 STOP_ID = "6087"
 
 ALERT_THRESHOLD_MINUTES = 6
@@ -51,14 +48,16 @@ def find_stop():
     resp.raise_for_status()
     feed = resp.json()
 
-    seen = {}  # stop_id -> set of stop_ids seen across trips
+    seen = {}
 
     for entity in feed.get("response", {}).get("entity", []):
         tu = entity.get("trip_update", {})
         route_id = tu.get("trip", {}).get("route_id", "")
-        if not route_id.startswith(ROUTE_SHORT_NAME):
+        if ROUTE_SHORT_NAME not in route_id:
             continue
         for stu in tu.get("stop_time_update", []):
+            if not isinstance(stu, dict):
+                continue
             sid = str(stu.get("stop_id", ""))
             if sid and sid not in seen:
                 seen[sid] = True
@@ -94,10 +93,33 @@ def get_minutes_away(stop_id: str) -> int | None:
     now_ts = datetime.now(timezone.utc).timestamp()
     soonest = None
 
-    for entity in feed.get("response", {}).get("entity", []):
+    entities = feed.get("response", {}).get("entity", [])
+    print(f"DEBUG: total entities in feed: {len(entities)}")
+
+    # Print all route_ids that contain "712" so we can verify the format
+    all_route_ids = set(
+        e.get("trip_update", {}).get("trip", {}).get("route_id", "")
+        for e in entities
+    )
+    matching = sorted(r for r in all_route_ids if ROUTE_SHORT_NAME in r)
+    print(f"DEBUG: route_ids containing '712': {matching[:10]}")
+
+    for entity in entities:
         tu = entity.get("trip_update", {})
-        if not tu.get("trip", {}).get("route_id", "").startswith(ROUTE_SHORT_NAME):
+        route_id = tu.get("trip", {}).get("route_id", "")
+
+        # Use 'in' instead of startswith to catch any format e.g. "71201-20240101"
+        if ROUTE_SHORT_NAME not in route_id:
             continue
+
+        # Print the stop_ids in this trip so we can verify stop 6087 appears
+        stop_ids_in_trip = [
+            str(s.get("stop_id", ""))
+            for s in tu.get("stop_time_update", [])
+            if isinstance(s, dict)
+        ]
+        print(f"DEBUG: route={route_id}, stops={stop_ids_in_trip[:8]}")
+
         for stu in tu.get("stop_time_update", []):
             if not isinstance(stu, dict):
                 continue
