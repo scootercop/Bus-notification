@@ -1,11 +1,8 @@
 """
-Bus 712 arrival notifier for Fordyce Avenue (stop 6087).
+Bus 712 arrival notifier for Fordyce Avenue.
 
-Strategy:
-  1. Get all active 712 trip_ids from the realtime feed + their current delay
-  2. For each trip, look up the scheduled arrival at stop 6087 from GTFS static
-  3. Apply the delay to get the predicted arrival time
-  4. Notify if < 6 minutes away
+This run will print all stops on the active 712 trips so we can find
+the correct stop_id format for Fordyce Avenue.
 
 Required environment variables:
   AT_API_KEY   - Your Auckland Transport API subscription key
@@ -23,12 +20,13 @@ AT_API_KEY = os.environ["AT_API_KEY"]
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
 
 ROUTE_SHORT_NAME        = "712"
-STOP_ID                 = "6087"
+STOP_CODE               = "6087"   # the public-facing stop number on the sign
 ALERT_THRESHOLD_MINUTES = 6
 
 AT_BASE             = "https://api.at.govt.nz"
 AT_TRIP_UPDATES_URL = f"{AT_BASE}/realtime/legacy/tripupdates"
 AT_STOP_TIMES_URL   = f"{AT_BASE}/gtfs/v3/stop_times"
+AT_STOPS_URL        = f"{AT_BASE}/gtfs/v3/stops"
 NTFY_URL            = f"https://ntfy.sh/{NTFY_TOPIC}"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -37,12 +35,32 @@ def at_headers():
     return {"Ocp-Apim-Subscription-Key": AT_API_KEY}
 
 
+def resolve_stop_id(stop_code: str) -> str | None:
+    """
+    Look up the internal stop_id for a given public stop_code.
+    e.g. stop_code "6087" might map to stop_id "6087-abc123"
+    """
+    resp = requests.get(
+        AT_STOPS_URL,
+        params={"filter[stop_code]": stop_code},
+        headers=at_headers(),
+        timeout=10,
+    )
+    if resp.status_code != 200:
+        print(f"DEBUG: Stop lookup failed: {resp.status_code} {resp.text[:200]}")
+        return None
+    data = resp.json().get("data", [])
+    if not data:
+        print(f"DEBUG: No stop found with stop_code={stop_code}")
+        return None
+    for s in data:
+        attrs = s.get("attributes", {})
+        print(f"DEBUG: Found stop_id={s.get('id')} name={attrs.get('stop_name')} code={attrs.get('stop_code')}")
+    return data[0].get("id")
+
+
 def get_active_712_trips(feed: dict) -> list[dict]:
-    """
-    Return list of {trip_id, delay_seconds} for all active route 712 trips.
-    delay_seconds is taken from the most recent stop_time_update in the trip,
-    or from the trip-level delay if stop_time_update is empty.
-    """
+    """Return list of {trip_id, delay_seconds} for all active route 712 trips."""
     trips = []
     for entity in feed.get("response", {}).get("entity", []):
         tu = entity.get("trip_update", {})
@@ -55,28 +73,23 @@ def get_active_712_trips(feed: dict) -> list[dict]:
         if not trip_id:
             continue
 
-        # Extract delay from stop_time_updates if present
         delay = 0
-        updates = tu.get("stop_time_update", [])
-        for stu in updates:
+        for stu in tu.get("stop_time_update", []):
             if not isinstance(stu, dict):
                 continue
             arr = stu.get("arrival") or stu.get("departure")
             if isinstance(arr, dict) and arr.get("delay") is not None:
                 delay = arr["delay"]
-                break  # use delay from first valid update
+                break
 
         trips.append({"trip_id": trip_id, "delay_seconds": delay})
 
-    print(f"DEBUG: Found {len(trips)} active 712 trips in realtime feed")
+    print(f"DEBUG: Found {len(trips)} active 712 trips")
     return trips
 
 
 def get_scheduled_arrival(trip_id: str, stop_id: str) -> str | None:
-    """
-    Look up the scheduled arrival time for a specific trip+stop from GTFS static.
-    Returns time string like "07:28:00" or None.
-    """
+    """Look up the scheduled arrival time for a specific trip+stop."""
     resp = requests.get(
         AT_STOP_TIMES_URL,
         params={
@@ -96,31 +109,29 @@ def get_scheduled_arrival(trip_id: str, stop_id: str) -> str | None:
 
 
 def parse_gtfs_time(time_str: str, base_date: datetime) -> datetime:
-    """
-    Parse a GTFS time string (which can exceed 24:00 for overnight trips)
-    into a datetime relative to base_date (today in NZT).
-    """
+    """Parse a GTFS time string into a datetime."""
     parts = time_str.split(":")
     hours, minutes, seconds = int(parts[0]), int(parts[1]), int(parts[2])
     return base_date + timedelta(hours=hours, minutes=minutes, seconds=seconds)
 
 
 def get_minutes_away() -> int | None:
-    """
-    Main logic: combine realtime delays with scheduled GTFS times
-    to predict arrival at stop 6087.
-    """
+    # Step 1: Resolve stop_code to internal stop_id
+    stop_id = resolve_stop_id(STOP_CODE)
+    if not stop_id:
+        print(f"ERROR: Could not resolve stop_code {STOP_CODE} to a stop_id")
+        return None
+
+    print(f"DEBUG: Using stop_id={stop_id}")
+
+    # Step 2: Get active 712 trips from realtime feed
     resp = requests.get(AT_TRIP_UPDATES_URL, headers=at_headers(), timeout=10)
     resp.raise_for_status()
     feed = resp.json()
 
     now = datetime.now(timezone.utc)
-
-    # Use Auckland time (UTC+12) as the base date for GTFS time parsing
     nzt_offset = timezone(timedelta(hours=12))
-    today_nzt = datetime.now(nzt_offset).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
+    today_nzt = datetime.now(nzt_offset).replace(hour=0, minute=0, second=0, microsecond=0)
 
     active_trips = get_active_712_trips(feed)
     if not active_trips:
@@ -132,19 +143,17 @@ def get_minutes_away() -> int | None:
         trip_id = trip["trip_id"]
         delay   = trip["delay_seconds"]
 
-        scheduled = get_scheduled_arrival(trip_id, STOP_ID)
+        scheduled = get_scheduled_arrival(trip_id, stop_id)
         if not scheduled:
-            print(f"DEBUG: No scheduled time found for trip {trip_id} at stop {STOP_ID}")
+            print(f"DEBUG: No scheduled time for trip {trip_id} at stop {stop_id}")
             continue
-
-        print(f"DEBUG: trip={trip_id}, scheduled={scheduled}, delay={delay}s")
 
         try:
             arr_time = parse_gtfs_time(scheduled, today_nzt)
             arr_time_utc = arr_time.astimezone(timezone.utc)
             predicted = arr_time_utc + timedelta(seconds=delay)
             minutes = (predicted - now).total_seconds() / 60
-            print(f"DEBUG: predicted arrival in {minutes:.1f} minutes")
+            print(f"DEBUG: trip={trip_id}, scheduled={scheduled}, delay={delay}s, in {minutes:.1f}min")
             if minutes > 0 and (soonest is None or minutes < soonest):
                 soonest = minutes
         except Exception as e:
@@ -155,7 +164,6 @@ def get_minutes_away() -> int | None:
 
 
 def send_notification(minutes: int):
-    """Push a notification via Ntfy."""
     message = f"Bus 712 is {minutes} minute{'s' if minutes != 1 else ''} away!"
     requests.post(
         NTFY_URL,
@@ -173,7 +181,7 @@ def send_notification(minutes: int):
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    print(f"Checking bus {ROUTE_SHORT_NAME} at stop {STOP_ID}...")
+    print(f"Checking bus {ROUTE_SHORT_NAME} at stop code {STOP_CODE}...")
     minutes = get_minutes_away()
 
     if minutes is None:
