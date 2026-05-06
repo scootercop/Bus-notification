@@ -1,10 +1,7 @@
 # .github/workflows/bus_notifier.yml
 #
-# Runs the bus 712 arrival checker every minute between 7:20–8:00 AM NZST
-# on Wednesday, Thursday, and Friday.
-#
-# NZ Standard Time is UTC+12, so 7:20–8:00 NZST = 19:20–20:00 UTC (prev day).
-# GitHub Actions cron uses UTC. Wed/Thu/Fri NZST = Tue/Wed/Thu UTC.
+# TEST MODE: Runs every minute, 24/7.
+# NOTE: GitHub Actions cron is best-effort - actual runs may be every 5-15 minutes.
 #
 # Setup steps:
 #   1. Add AT_API_KEY to your repo → Settings → Secrets → Actions
@@ -15,10 +12,7 @@ name: Bus 712 Notifier
 
 on:
   schedule:
-    # Every minute from 19:20 to 19:59 UTC (= 7:20–8:00 NZST)
-    # on Tuesday, Wednesday, Thursday (= Wed, Thu, Fri NZST)
-    - cron: '20-59 19 * * 2,3,4'   # 7:20–7:59 NZST
-    - cron: '0    20 * * 2,3,4'    # 8:00 NZST (last run)
+    - cron: '* * * * *'   # every minute (best effort)
 
   # Allow manual triggering for testing
   workflow_dispatch:
