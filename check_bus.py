@@ -18,9 +18,8 @@ from datetime import datetime, timezone, timedelta
 AT_API_KEY = os.environ["AT_API_KEY"]
 NTFY_TOPIC = os.environ["NTFY_TOPIC"]
 
-ROUTE_SHORT_NAME        = "712"
-STOP_CODE               = "6087"
-ALERT_THRESHOLD_MINUTES = 6
+ROUTE_SHORT_NAME = "712"
+STOP_CODE        = "6087"
 
 AT_BASE             = "https://api.at.govt.nz"
 AT_TRIP_UPDATES_URL = f"{AT_BASE}/realtime/legacy/tripupdates"
@@ -149,10 +148,8 @@ def main() -> None:
         return
 
     print(f"Bus {ROUTE_SHORT_NAME} is ~{minutes} minute(s) away.")
-
-    if minutes < ALERT_THRESHOLD_MINUTES:
-        send_notification(minutes)
-        print("Notification sent.")
+    send_notification(minutes)
+    print("Notification sent.")
 
 
 if __name__ == "__main__":
