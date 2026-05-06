@@ -1,18 +1,26 @@
 # .github/workflows/bus_notifier.yml
 #
-# TEST MODE: Runs every minute, 24/7.
-# NOTE: GitHub Actions cron is best-effort - actual runs may be every 5-15 minutes.
+# Runs the bus 712 arrival checker every 5 minutes between 7:20–8:00 AM
+# Auckland time, on Wednesday, Thursday, and Friday.
 #
-# Setup steps:
-#   1. Add AT_API_KEY to your repo → Settings → Secrets → Actions
-#   2. Add NTFY_TOPIC to your repo → Settings → Secrets → Actions
+# NOTE: GitHub Actions scheduled workflows have a minimum interval of 5 minutes.
+# Actual runs may be delayed by several minutes during peak periods.
+#
+# Setup:
+#   1. Add AT_API_KEY to repo Settings → Secrets → Actions
+#   2. Add NTFY_TOPIC to repo Settings → Secrets → Actions
 #   3. Install the Ntfy app on your phone and subscribe to your NTFY_TOPIC
 
 name: Bus 712 Notifier
 
 on:
   schedule:
-    - cron: '* * * * *'   # every minute (best effort)
+    # Every 5 minutes from 7:20–8:00 AM Auckland time on Wed/Thu/Fri.
+    # Auckland time auto-handles daylight saving when timezone is set.
+    - cron: '20,25,30,35,40,45,50,55 7 * * 3,4,5'
+      timezone: 'Pacific/Auckland'
+    - cron: '0 8 * * 3,4,5'
+      timezone: 'Pacific/Auckland'
 
   # Allow manual triggering for testing
   workflow_dispatch:
