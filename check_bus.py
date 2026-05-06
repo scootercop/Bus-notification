@@ -1,9 +1,6 @@
 """
 Bus 712 arrival notifier for Fordyce Avenue.
 
-This run will print all stops on the active 712 trips so we can find
-the correct stop_id format for Fordyce Avenue.
-
 Required environment variables:
   AT_API_KEY   - Your Auckland Transport API subscription key
   NTFY_TOPIC   - Your private Ntfy topic name
@@ -20,7 +17,7 @@ AT_API_KEY = os.environ["AT_API_KEY"]
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
 
 ROUTE_SHORT_NAME        = "712"
-STOP_CODE               = "6087"   # the public-facing stop number on the sign
+STOP_CODE               = "6087"
 ALERT_THRESHOLD_MINUTES = 6
 
 AT_BASE             = "https://api.at.govt.nz"
@@ -36,10 +33,7 @@ def at_headers():
 
 
 def resolve_stop_id(stop_code: str) -> str | None:
-    """
-    Look up the internal stop_id for a given public stop_code.
-    e.g. stop_code "6087" might map to stop_id "6087-abc123"
-    """
+    """Look up the internal stop_id for a given public stop_code."""
     resp = requests.get(
         AT_STOPS_URL,
         params={"filter[stop_code]": stop_code},
@@ -47,15 +41,10 @@ def resolve_stop_id(stop_code: str) -> str | None:
         timeout=10,
     )
     if resp.status_code != 200:
-        print(f"DEBUG: Stop lookup failed: {resp.status_code} {resp.text[:200]}")
         return None
     data = resp.json().get("data", [])
     if not data:
-        print(f"DEBUG: No stop found with stop_code={stop_code}")
         return None
-    for s in data:
-        attrs = s.get("attributes", {})
-        print(f"DEBUG: Found stop_id={s.get('id')} name={attrs.get('stop_name')} code={attrs.get('stop_code')}")
     return data[0].get("id")
 
 
@@ -84,28 +73,36 @@ def get_active_712_trips(feed: dict) -> list[dict]:
 
         trips.append({"trip_id": trip_id, "delay_seconds": delay})
 
-    print(f"DEBUG: Found {len(trips)} active 712 trips")
     return trips
 
 
-def get_scheduled_arrival(trip_id: str, stop_id: str) -> str | None:
-    """Look up the scheduled arrival time for a specific trip+stop."""
+def get_trip_stop_times(trip_id: str) -> list[dict]:
+    """Get all stop_times for a trip (returns list of attributes dicts)."""
     resp = requests.get(
         AT_STOP_TIMES_URL,
-        params={
-            "filter[trip_id]": trip_id,
-            "filter[stop_id]": stop_id,
-        },
+        params={"filter[trip_id]": trip_id},
         headers=at_headers(),
         timeout=10,
     )
     if resp.status_code != 200:
-        return None
+        print(f"DEBUG: stop_times fetch failed: {resp.status_code} {resp.text[:300]}")
+        return []
     data = resp.json().get("data", [])
-    if not data:
-        return None
-    attrs = data[0].get("attributes", {})
-    return attrs.get("arrival_time") or attrs.get("departure_time")
+    return data
+
+
+def find_arrival_at_stop(stop_times: list[dict], stop_id: str, stop_code: str) -> str | None:
+    """
+    Search through a trip's stop_times to find the one matching our stop.
+    Tries matching by stop_id first, then stop_code as fallback.
+    """
+    for st in stop_times:
+        attrs = st.get("attributes", {})
+        st_stop_id = attrs.get("stop_id", "")
+        # Match either full stop_id or by prefix (just the number part)
+        if st_stop_id == stop_id or st_stop_id.startswith(stop_code + "-") or st_stop_id == stop_code:
+            return attrs.get("arrival_time") or attrs.get("departure_time")
+    return None
 
 
 def parse_gtfs_time(time_str: str, base_date: datetime) -> datetime:
@@ -116,15 +113,13 @@ def parse_gtfs_time(time_str: str, base_date: datetime) -> datetime:
 
 
 def get_minutes_away() -> int | None:
-    # Step 1: Resolve stop_code to internal stop_id
     stop_id = resolve_stop_id(STOP_CODE)
     if not stop_id:
-        print(f"ERROR: Could not resolve stop_code {STOP_CODE} to a stop_id")
+        print(f"ERROR: Could not resolve stop_code {STOP_CODE}")
         return None
 
     print(f"DEBUG: Using stop_id={stop_id}")
 
-    # Step 2: Get active 712 trips from realtime feed
     resp = requests.get(AT_TRIP_UPDATES_URL, headers=at_headers(), timeout=10)
     resp.raise_for_status()
     feed = resp.json()
@@ -134,6 +129,8 @@ def get_minutes_away() -> int | None:
     today_nzt = datetime.now(nzt_offset).replace(hour=0, minute=0, second=0, microsecond=0)
 
     active_trips = get_active_712_trips(feed)
+    print(f"DEBUG: Found {len(active_trips)} active 712 trips")
+
     if not active_trips:
         return None
 
@@ -143,9 +140,19 @@ def get_minutes_away() -> int | None:
         trip_id = trip["trip_id"]
         delay   = trip["delay_seconds"]
 
-        scheduled = get_scheduled_arrival(trip_id, stop_id)
+        stop_times = get_trip_stop_times(trip_id)
+        if not stop_times:
+            print(f"DEBUG: trip {trip_id} returned no stop_times")
+            continue
+
+        # Print first stop_id of the trip so we can see the format
+        first = stop_times[0].get("attributes", {})
+        print(f"DEBUG: trip {trip_id} has {len(stop_times)} stops, "
+              f"e.g. stop_id={first.get('stop_id')}")
+
+        scheduled = find_arrival_at_stop(stop_times, stop_id, STOP_CODE)
         if not scheduled:
-            print(f"DEBUG: No scheduled time for trip {trip_id} at stop {stop_id}")
+            print(f"DEBUG: Stop {STOP_CODE} not on trip {trip_id}")
             continue
 
         try:
@@ -153,7 +160,8 @@ def get_minutes_away() -> int | None:
             arr_time_utc = arr_time.astimezone(timezone.utc)
             predicted = arr_time_utc + timedelta(seconds=delay)
             minutes = (predicted - now).total_seconds() / 60
-            print(f"DEBUG: trip={trip_id}, scheduled={scheduled}, delay={delay}s, in {minutes:.1f}min")
+            print(f"DEBUG: trip={trip_id}, scheduled={scheduled}, "
+                  f"delay={delay}s, in {minutes:.1f}min")
             if minutes > 0 and (soonest is None or minutes < soonest):
                 soonest = minutes
         except Exception as e:
