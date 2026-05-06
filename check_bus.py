@@ -22,7 +22,7 @@ ALERT_THRESHOLD_MINUTES = 6
 
 AT_BASE             = "https://api.at.govt.nz"
 AT_TRIP_UPDATES_URL = f"{AT_BASE}/realtime/legacy/tripupdates"
-AT_STOP_TIMES_URL   = f"{AT_BASE}/gtfs/v3/stop_times"
+AT_TRIPS_URL        = f"{AT_BASE}/gtfs/v3/trips"
 AT_STOPS_URL        = f"{AT_BASE}/gtfs/v3/stops"
 NTFY_URL            = f"https://ntfy.sh/{NTFY_TOPIC}"
 
@@ -77,30 +77,34 @@ def get_active_712_trips(feed: dict) -> list[dict]:
 
 
 def get_trip_stop_times(trip_id: str) -> list[dict]:
-    """Get all stop_times for a trip (returns list of attributes dicts)."""
-    resp = requests.get(
-        AT_STOP_TIMES_URL,
-        params={"filter[trip_id]": trip_id},
-        headers=at_headers(),
-        timeout=10,
-    )
-    if resp.status_code != 200:
-        print(f"DEBUG: stop_times fetch failed: {resp.status_code} {resp.text[:300]}")
-        return []
-    data = resp.json().get("data", [])
-    return data
+    """
+    Get all stop_times for a trip via the trips sub-resource.
+    Tries multiple URL patterns since AT's API path conventions vary.
+    """
+    candidates = [
+        f"{AT_TRIPS_URL}/{trip_id}/stoptimes",
+        f"{AT_TRIPS_URL}/{trip_id}/stop_times",
+    ]
+    for url in candidates:
+        resp = requests.get(url, headers=at_headers(), timeout=10)
+        if resp.status_code == 200:
+            data = resp.json().get("data", [])
+            if data:
+                print(f"DEBUG: stop_times fetched from {url}")
+                return data
+        else:
+            print(f"DEBUG: {url} returned {resp.status_code}")
+    return []
 
 
 def find_arrival_at_stop(stop_times: list[dict], stop_id: str, stop_code: str) -> str | None:
-    """
-    Search through a trip's stop_times to find the one matching our stop.
-    Tries matching by stop_id first, then stop_code as fallback.
-    """
+    """Search a trip's stop_times for the one matching our stop."""
     for st in stop_times:
         attrs = st.get("attributes", {})
-        st_stop_id = attrs.get("stop_id", "")
-        # Match either full stop_id or by prefix (just the number part)
-        if st_stop_id == stop_id or st_stop_id.startswith(stop_code + "-") or st_stop_id == stop_code:
+        st_stop_id = str(attrs.get("stop_id", ""))
+        if (st_stop_id == stop_id
+                or st_stop_id.startswith(stop_code + "-")
+                or st_stop_id == stop_code):
             return attrs.get("arrival_time") or attrs.get("departure_time")
     return None
 
@@ -145,7 +149,6 @@ def get_minutes_away() -> int | None:
             print(f"DEBUG: trip {trip_id} returned no stop_times")
             continue
 
-        # Print first stop_id of the trip so we can see the format
         first = stop_times[0].get("attributes", {})
         print(f"DEBUG: trip {trip_id} has {len(stop_times)} stops, "
               f"e.g. stop_id={first.get('stop_id')}")
