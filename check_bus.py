@@ -127,9 +127,9 @@ def send_notification(minutes: int) -> None:
         NTFY_URL,
         data=f"Bus 712 is {minutes} minute{plural} away!".encode("utf-8"),
         headers={
-            "Title": "🚌 Bus Alert – Fordyce Ave",
+            "Title": "Bus Alert - Fordyce Ave",
             "Priority": "high",
-            "Tags": "bus,alarm",
+            "Tags": "bus",
         },
         timeout=10,
     ).raise_for_status()
