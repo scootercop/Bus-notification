@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">BusNotifier</string>
+    <string name="channel_arrivals_name">Bus arrivals</string>
+    <string name="channel_arrivals_desc">Alerts when a watched bus is close</string>
+</resources>

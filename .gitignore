@@ -1,0 +1,32 @@
+# Built application files
+*.apk
+*.aar
+*.ap_
+*.aab
+
+# Java/Kotlin build
+*.class
+bin/
+gen/
+out/
+release/
+
+# Gradle
+.gradle/
+build/
+local.properties
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+captures/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Crashlytics / Keys
+google-services.json
+keystore.properties
+*.jks
+*.keystore
