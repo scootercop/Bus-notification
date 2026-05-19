@@ -1,6 +1,7 @@
 package com.navalrishi.busnotifier.background
 
 import android.content.Context
+import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.navalrishi.busnotifier.BusNotifierApp
@@ -18,15 +19,19 @@ class BusCheckWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
         val watchId = inputData.getLong(WatchScheduler.EXTRA_WATCH_ID, -1L)
         if (watchId < 0) return Result.failure()
         val watch = app.database.watchDao().byId(watchId) ?: return Result.success()
+        Log.i(TAG, "watch=$watch")
         if (!watch.enabled) return Result.success()
 
         val calc = EtaCalculator(app.atClient)
         val res = calc.candidates(watch.routeShortName, watch.stopCode)
+        Log.i(TAG, "result=$res")
 
         if (res is AtClient.Result.Ok) {
             val soonest = res.value.minByOrNull { it.etaMinutes }
+            Log.i(TAG, "soonest=$soonest threshold=${watch.thresholdMin}")
             if (soonest != null && soonest.etaMinutes <= watch.thresholdMin) {
                 val already = app.database.notifiedTripDao().count(watchId, soonest.tripId) > 0
+                Log.i(TAG, "alreadyNotified=$already tripId=${soonest.tripId}")
                 if (!already) {
                     Notifier.showArrival(
                         applicationContext, watchId, watch.routeShortName, watch.stopCode, soonest.etaMinutes
@@ -34,6 +39,7 @@ class BusCheckWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
                     app.database.notifiedTripDao().insert(
                         NotifiedTrip(watchId, soonest.tripId, System.currentTimeMillis())
                     )
+                    Log.i(TAG, "Notification posted")
                 }
             }
             // Cleanup dedup table older than 24h
@@ -45,4 +51,6 @@ class BusCheckWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
         app.scheduler.scheduleNext(watch, ZonedDateTime.now(ZoneId.of("Pacific/Auckland")).plusMinutes(1))
         return Result.success()
     }
+
+    private companion object { const val TAG = "BusCheckWorker" }
 }

@@ -1,8 +1,16 @@
 package com.navalrishi.busnotifier.network
 
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonDecoder
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 
 @Serializable
 data class StopsResponse(val data: List<StopItem> = emptyList())
@@ -25,8 +33,30 @@ data class TripEntity(
 @Serializable
 data class TripUpdate(
     val trip: TripRef? = null,
-    @SerialName("stop_time_update") val stopTimeUpdate: List<StopTimeUpdate> = emptyList(),
+    @SerialName("stop_time_update")
+    @Serializable(with = StuListSerializer::class)
+    val stopTimeUpdate: List<StopTimeUpdate> = emptyList(),
 )
+
+/**
+ * AT's realtime API returns `stop_time_update` as either a JSON array or a single
+ * object (when the trip has exactly one upcoming stop). Accept both shapes.
+ */
+object StuListSerializer : KSerializer<List<StopTimeUpdate>> {
+    private val delegate = ListSerializer(StopTimeUpdate.serializer())
+    override val descriptor: SerialDescriptor = delegate.descriptor
+
+    override fun deserialize(decoder: Decoder): List<StopTimeUpdate> {
+        val jd = decoder as? JsonDecoder ?: return delegate.deserialize(decoder)
+        return when (val el = jd.decodeJsonElement()) {
+            is JsonArray -> el.map { jd.json.decodeFromJsonElement(StopTimeUpdate.serializer(), it) }
+            is JsonObject -> listOf(jd.json.decodeFromJsonElement(StopTimeUpdate.serializer(), el))
+            else -> emptyList()
+        }
+    }
+
+    override fun serialize(encoder: Encoder, value: List<StopTimeUpdate>) = delegate.serialize(encoder, value)
+}
 
 @Serializable
 data class TripRef(
