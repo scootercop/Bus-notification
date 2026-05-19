@@ -7,6 +7,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -29,6 +30,7 @@ fun WatchEditScreen(nav: NavController, watchId: Long) {
     val ctx = LocalContext.current
     val app = ctx.applicationContext as BusNotifierApp
     val scope = rememberCoroutineScope()
+    val snackbar = remember { SnackbarHostState() }
 
     var loaded by remember { mutableStateOf(watchId == 0L) }
     var label by remember { mutableStateOf("") }
@@ -40,7 +42,7 @@ fun WatchEditScreen(nav: NavController, watchId: Long) {
     var threshold by remember { mutableIntStateOf(6) }
     var poll by remember { mutableIntStateOf(5) }
     var enabled by remember { mutableStateOf(true) }
-    var testStatus by remember { mutableStateOf<String?>(null) }
+    var pickerOpenFor by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(watchId) {
         if (watchId != 0L) {
@@ -50,8 +52,8 @@ fun WatchEditScreen(nav: NavController, watchId: Long) {
                 route = w.routeShortName
                 stop = w.stopCode
                 days = w.daysMask
-                startMin = w.startMinute
-                endMin = w.endMinute
+                startMin = w.startMinute.coerceIn(0, 23 * 60 + 59)
+                endMin = w.endMinute.coerceIn(1, 23 * 60 + 59)
                 threshold = w.thresholdMin
                 poll = w.pollIntervalMin
                 enabled = w.enabled
@@ -60,31 +62,34 @@ fun WatchEditScreen(nav: NavController, watchId: Long) {
         }
     }
 
-    Scaffold(topBar = {
-        TopAppBar(
-            title = { Text(if (watchId == 0L) "New watch" else "Edit watch") },
-            navigationIcon = {
-                IconButton(onClick = { nav.popBackStack() }) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                }
-            },
-            actions = {
-                if (watchId != 0L) {
-                    IconButton(onClick = {
-                        scope.launch {
-                            withContext(Dispatchers.IO) {
-                                app.database.watchDao().byId(watchId)?.let {
-                                    app.database.watchDao().delete(it)
-                                    app.scheduler.cancel(it.id)
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(if (watchId == 0L) "New watch" else "Edit watch") },
+                navigationIcon = {
+                    IconButton(onClick = { nav.popBackStack() }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    if (watchId != 0L) {
+                        IconButton(onClick = {
+                            scope.launch {
+                                withContext(Dispatchers.IO) {
+                                    app.database.watchDao().byId(watchId)?.let {
+                                        app.database.watchDao().delete(it)
+                                        app.scheduler.cancel(it.id)
+                                    }
                                 }
+                                nav.popBackStack()
                             }
-                            nav.popBackStack()
-                        }
-                    }) { Icon(Icons.Filled.Delete, contentDescription = "Delete") }
+                        }) { Icon(Icons.Filled.Delete, contentDescription = "Delete") }
+                    }
                 }
-            }
-        )
-    }) { padding ->
+            )
+        },
+        snackbarHost = { SnackbarHost(snackbar) }
+    ) { padding ->
         if (!loaded) {
             Box(Modifier.padding(padding).fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
@@ -127,8 +132,8 @@ fun WatchEditScreen(nav: NavController, watchId: Long) {
                 }
             }
 
-            TimePickerRow("Start", startMin) { startMin = it }
-            TimePickerRow("End", endMin) { endMin = it }
+            TimeRow(label = "Start", minutes = startMin) { pickerOpenFor = "start" }
+            TimeRow(label = "End", minutes = endMin) { pickerOpenFor = "end" }
 
             OutlinedTextField(
                 value = threshold.toString(),
@@ -151,98 +156,121 @@ fun WatchEditScreen(nav: NavController, watchId: Long) {
 
             HorizontalDivider()
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = {
-                        scope.launch {
-                            val w = buildWatch(watchId, label, route, stop, days, startMin, endMin, poll, threshold, enabled)
-                                ?: run { testStatus = "Fill in bus number and stop code"; return@launch }
-                            withContext(Dispatchers.IO) {
-                                val id = app.database.watchDao().upsert(w)
-                                val saved = w.copy(id = if (w.id == 0L) id else w.id)
-                                if (saved.enabled) app.scheduler.scheduleNext(saved)
-                                else app.scheduler.cancel(saved.id)
-                            }
-                            nav.popBackStack()
-                        }
-                    }
-                ) { Text("Save") }
-
-                OutlinedButton(onClick = {
-                    testStatus = "Checking…"
+                Button(onClick = {
                     scope.launch {
                         if (route.isBlank() || stop.isBlank()) {
-                            testStatus = "Fill route and stop first"
+                            snackbar.showSnackbar("Fill in bus number and stop code")
                             return@launch
+                        }
+                        if (endMin <= startMin) {
+                            snackbar.showSnackbar("End time must be after start time")
+                            return@launch
+                        }
+                        val w = Watch(
+                            id = watchId,
+                            label = label.trim(),
+                            routeShortName = route.trim(),
+                            stopCode = stop.trim(),
+                            daysMask = days,
+                            startMinute = startMin.coerceIn(0, 1439),
+                            endMinute = endMin.coerceIn(1, 1439),
+                            pollIntervalMin = poll.coerceAtLeast(1),
+                            thresholdMin = threshold.coerceAtLeast(1),
+                            enabled = enabled,
+                        )
+                        withContext(Dispatchers.IO) {
+                            val id = app.database.watchDao().upsert(w)
+                            val saved = w.copy(id = if (w.id == 0L) id else w.id)
+                            if (saved.enabled) app.scheduler.scheduleNext(saved)
+                            else app.scheduler.cancel(saved.id)
+                        }
+                        nav.popBackStack()
+                    }
+                }) { Text("Save") }
+
+                OutlinedButton(onClick = {
+                    scope.launch {
+                        if (route.isBlank() || stop.isBlank()) {
+                            snackbar.showSnackbar("Fill route and stop first"); return@launch
                         }
                         if (!app.keyStore.hasApiKey()) {
-                            testStatus = "Set your AT API key in Settings first"
-                            return@launch
+                            snackbar.showSnackbar("Set your AT API key in Settings first"); return@launch
                         }
+                        snackbar.showSnackbar("Checking…", duration = SnackbarDuration.Short)
                         val res = EtaCalculator(app.atClient).candidates(route, stop)
-                        testStatus = when (res) {
+                        val msg = when (res) {
                             is AtClient.Result.Ok -> {
                                 val soonest = res.value.minByOrNull { it.etaMinutes }
-                                if (soonest == null) "No upcoming arrivals right now."
-                                else "Next: trip ${soonest.tripId} in ${soonest.etaMinutes} min"
+                                if (soonest == null) "No upcoming arrivals right now"
+                                else "Next bus: ${soonest.etaMinutes} min away (trip ${soonest.tripId.take(12)}…)"
                             }
                             is AtClient.Result.Err -> "Error: ${res.message}"
                         }
+                        snackbar.showSnackbar(msg, duration = SnackbarDuration.Long)
                     }
                 }) { Text("Test now") }
             }
-            testStatus?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+        }
+    }
+
+    val target = pickerOpenFor
+    if (target != null) {
+        val initial = if (target == "start") startMin else endMin
+        TimePickDialog(
+            initialMinutes = initial,
+            onDismiss = { pickerOpenFor = null },
+            onConfirm = { newMin ->
+                if (target == "start") startMin = newMin else endMin = newMin
+                pickerOpenFor = null
+            }
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TimeRow(label: String, minutes: Int, onClick: () -> Unit) {
+    val h = minutes / 60
+    val m = minutes % 60
+    OutlinedCard(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Filled.Schedule, contentDescription = null)
+            Spacer(Modifier.width(12.dp))
+            Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+            Text("%02d:%02d".format(h, m), style = MaterialTheme.typography.titleMedium)
         }
     }
 }
 
-private fun buildWatch(
-    id: Long, label: String, route: String, stop: String,
-    daysMask: Int, startMin: Int, endMin: Int,
-    poll: Int, threshold: Int, enabled: Boolean,
-): Watch? {
-    if (route.isBlank() || stop.isBlank()) return null
-    return Watch(
-        id = id,
-        label = label.trim(),
-        routeShortName = route.trim(),
-        stopCode = stop.trim(),
-        daysMask = daysMask,
-        startMinute = startMin.coerceIn(0, 1439),
-        endMinute = endMin.coerceIn(0, 1440),
-        pollIntervalMin = poll.coerceAtLeast(1),
-        thresholdMin = threshold.coerceAtLeast(1),
-        enabled = enabled,
-    )
-}
-
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun TimePickerRow(label: String, minutes: Int, onChange: (Int) -> Unit) {
-    val h = minutes / 60
-    val m = minutes % 60
-    var hours by remember(minutes) { mutableStateOf(h.toString()) }
-    var mins by remember(minutes) { mutableStateOf("%02d".format(m)) }
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(label, modifier = Modifier.width(48.dp))
-        OutlinedTextField(
-            value = hours,
-            onValueChange = { s -> hours = s.filter { it.isDigit() }.take(2); push(hours, mins, onChange) },
-            label = { Text("HH") },
-            modifier = Modifier.width(96.dp), singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-        )
-        Text(":")
-        OutlinedTextField(
-            value = mins,
-            onValueChange = { s -> mins = s.filter { it.isDigit() }.take(2); push(hours, mins, onChange) },
-            label = { Text("MM") },
-            modifier = Modifier.width(96.dp), singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-        )
-    }
-}
-
-private fun push(h: String, m: String, onChange: (Int) -> Unit) {
-    val hh = h.toIntOrNull()?.coerceIn(0, 23) ?: return
-    val mm = m.toIntOrNull()?.coerceIn(0, 59) ?: return
-    onChange(hh * 60 + mm)
+private fun TimePickDialog(
+    initialMinutes: Int,
+    onDismiss: () -> Unit,
+    onConfirm: (Int) -> Unit,
+) {
+    val safeMinutes = initialMinutes.coerceIn(0, 23 * 60 + 59)
+    val state = rememberTimePickerState(
+        initialHour = safeMinutes / 60,
+        initialMinute = safeMinutes % 60,
+        is24Hour = true,
+    )
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = { onConfirm(state.hour * 60 + state.minute) }) { Text("OK") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+        text = {
+            TimePicker(state = state)
+        }
+    )
 }
