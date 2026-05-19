@@ -30,15 +30,12 @@ object Notifier {
             ctx, watchId.toInt(), intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
-        // setOnlyAlertOnce: pings sound/heads-up the first time, then silently updates
-        // the same notification on subsequent posts with the same id.
         val builder = NotificationCompat.Builder(ctx, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_bus)
             .setContentTitle("Bus $route — stop $stopCode")
             .setContentText("Arriving in $minutes minute$plural")
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_ALARM)
-            .setOnlyAlertOnce(true)
             .setAutoCancel(true)
             .setContentIntent(pi)
         NotificationManagerCompat.from(ctx).notify(watchId.toInt(), builder.build())
