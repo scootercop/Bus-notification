@@ -5,7 +5,6 @@ import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.navalrishi.busnotifier.BusNotifierApp
-import com.navalrishi.busnotifier.data.NotifiedTrip
 import com.navalrishi.busnotifier.domain.EtaCalculator
 import com.navalrishi.busnotifier.domain.Notifier
 import com.navalrishi.busnotifier.domain.WatchScheduler
@@ -30,21 +29,14 @@ class BusCheckWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
             val soonest = res.value.minByOrNull { it.etaMinutes }
             Log.i(TAG, "soonest=$soonest threshold=${watch.thresholdMin}")
             if (soonest != null && soonest.etaMinutes <= watch.thresholdMin) {
-                val already = app.database.notifiedTripDao().count(watchId, soonest.tripId) > 0
-                Log.i(TAG, "alreadyNotified=$already tripId=${soonest.tripId}")
-                if (!already) {
-                    Notifier.showArrival(
-                        applicationContext, watchId, watch.routeShortName, watch.stopCode, soonest.etaMinutes
-                    )
-                    app.database.notifiedTripDao().insert(
-                        NotifiedTrip(watchId, soonest.tripId, System.currentTimeMillis())
-                    )
-                    Log.i(TAG, "Notification posted")
-                }
+                Notifier.showArrival(
+                    applicationContext, watchId, watch.routeShortName, watch.stopCode, soonest.etaMinutes
+                )
+                Log.i(TAG, "Notification updated (tripId=${soonest.tripId})")
+            } else {
+                Notifier.cancel(applicationContext, watchId)
+                Log.i(TAG, "No candidate in threshold — notification cleared")
             }
-            // Cleanup dedup table older than 24h
-            app.database.notifiedTripDao()
-                .purgeOlderThan(System.currentTimeMillis() - 24L * 60 * 60 * 1000)
         }
 
         // Reschedule the next poll
