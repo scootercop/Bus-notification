@@ -12,7 +12,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import com.navalrishi.busnotifier.BusNotifierApp
 import com.navalrishi.busnotifier.data.Watch
@@ -26,7 +25,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 fun WatchListScreen(nav: NavController) {
     val ctx = LocalContext.current
     val app = ctx.applicationContext as BusNotifierApp
-    val watches by app.database.watchDao().observeAll().collectAsStateWithLifecycle(initialValue = emptyList())
+    val watches by app.database.watchDao().observeAll().collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
 
     Scaffold(
