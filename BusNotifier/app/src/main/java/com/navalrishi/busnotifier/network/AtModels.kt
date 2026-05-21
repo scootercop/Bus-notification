@@ -66,6 +66,7 @@ data class TripRef(
 
 @Serializable
 data class StopTimeUpdate(
+    @SerialName("stop_id") val stopId: String? = null,
     val arrival: TimeEvent? = null,
     val departure: TimeEvent? = null,
 )
